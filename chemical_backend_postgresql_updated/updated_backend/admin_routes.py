@@ -1,14 +1,15 @@
 
 """
 Admin API for the Chemical Classification Assistant.
-Uses the root project chemical_waste.db database.
+Uses Supabase PostgreSQL via DATABASE_URL.
 """
 
 import hmac
 import logging
 import os
 import re
-import sqlite3
+import psycopg
+from database import get_connection
 import threading
 import time
 
@@ -164,57 +165,10 @@ def _clear_fails(key):
 # DATABASE CONNECTION - FIXED
 # ==========================================================
 
-def _db_path():
-    """
-    Correct database location:
-
-    ChemicalWasteSystem/chemical_waste.db
-
-    Not:
-    ChemicalWasteSystem/backend/chemical_waste.db
-    """
-
-    configured_path = os.environ.get(
-        "CHEMICAL_DB_PATH", ""
-    ).strip()
-
-    if configured_path:
-        return configured_path
-
-    project_root = os.path.dirname(BASE_DIR)
-
-    return os.path.join(
-        project_root,
-        "chemical_waste.db"
-    )
-
-
 @contextmanager
 def db():
-    database_path = _db_path()
-
-    if not os.path.isfile(database_path):
-        raise sqlite3.OperationalError(
-            "Database file not found: " + database_path
-        )
-
-    conn = sqlite3.connect(
-        database_path,
-        timeout=10
-    )
-
-    conn.row_factory = sqlite3.Row
-
-    try:
+    with get_connection() as conn:
         yield conn
-        conn.commit()
-
-    except Exception:
-        conn.rollback()
-        raise
-
-    finally:
-        conn.close()
 
 
 # ==========================================================
@@ -559,8 +513,8 @@ def _duplicate_exists(
         f"""
         SELECT id
         FROM {TABLE}
-        WHERE lower(chemical_name) = lower(?)
-        AND id != ?
+        WHERE lower(chemical_name) = lower(%s)
+        AND id != %s
         """,
         (
             name,
@@ -577,8 +531,8 @@ def _duplicate_exists(
 # DATABASE ERROR HANDLER
 # ==========================================================
 
-@admin_bp.errorhandler(sqlite3.Error)
-def _sqlite_error(exc):
+@admin_bp.errorhandler(psycopg.Error)
+def _database_error(exc):
 
     log.exception(
         "Database error in admin API: %s",
@@ -633,14 +587,14 @@ def list_chemicals():
         )
 
         sql += (
-            " WHERE chemical_name LIKE ? ESCAPE '\\' "
-            "OR aliases LIKE ? ESCAPE '\\'"
+            " WHERE chemical_name ILIKE %s ESCAPE '\\' "
+            "OR aliases ILIKE %s ESCAPE '\\'"
         )
 
         params = [like, like]
 
     sql += (
-        " ORDER BY chemical_name COLLATE NOCASE"
+        " ORDER BY lower(chemical_name), id"
     )
 
     with db() as conn:
@@ -702,7 +656,8 @@ def create_chemical():
                     primary_project_class,
                     virtual_group
                 )
-                VALUES (?, ?, ?, ?)
+               VALUES (%s, %s, %s, %s)
+               RETURNING id
                 """,
                 (
                     clean["chemical_name"],
@@ -712,7 +667,7 @@ def create_chemical():
                 )
             )
 
-        except sqlite3.IntegrityError as exc:
+        except psycopg.IntegrityError as exc:
             log.warning(
                 "Insert rejected: %s",
                 exc
@@ -723,13 +678,10 @@ def create_chemical():
                 409
             )
 
+        new_id = cur.fetchone()["id"]
         row = conn.execute(
-            f"""
-            SELECT {SELECT_COLUMNS}
-            FROM {TABLE}
-            WHERE id = ?
-            """,
-            (cur.lastrowid,)
+            f"SELECT {SELECT_COLUMNS} FROM {TABLE} WHERE id = %s",
+            (new_id,)
         ).fetchone()
 
     _notify_changed()
@@ -766,7 +718,7 @@ def update_chemical(chemical_id):
             f"""
             SELECT 1
             FROM {TABLE}
-            WHERE id = ?
+            WHERE id = %s
             """,
             (chemical_id,)
         ).fetchone()
@@ -792,11 +744,11 @@ def update_chemical(chemical_id):
                 f"""
                 UPDATE {TABLE}
                 SET
-                    chemical_name = ?,
-                    aliases = ?,
-                    primary_project_class = ?,
-                    virtual_group = ?
-                WHERE id = ?
+                    chemical_name = %s,
+                    aliases = %s,
+                    primary_project_class = %s,
+                    virtual_group = %s
+                WHERE id = %s
                 """,
                 (
                     clean["chemical_name"],
@@ -807,7 +759,7 @@ def update_chemical(chemical_id):
                 )
             )
 
-        except sqlite3.IntegrityError as exc:
+        except psycopg.IntegrityError as exc:
             log.warning(
                 "Update rejected: %s",
                 exc
@@ -822,7 +774,7 @@ def update_chemical(chemical_id):
             f"""
             SELECT {SELECT_COLUMNS}
             FROM {TABLE}
-            WHERE id = ?
+            WHERE id = %s
             """,
             (chemical_id,)
         ).fetchone()
@@ -849,7 +801,7 @@ def delete_chemical(chemical_id):
         cur = conn.execute(
             f"""
             DELETE FROM {TABLE}
-            WHERE id = ?
+            WHERE id = %s
             """,
             (chemical_id,)
         )

@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import sqlite3
+from database import get_connection
 import os
 from difflib import SequenceMatcher
 from dotenv import load_dotenv
@@ -15,20 +15,6 @@ app = Flask(__name__)
 CORS(app)
 from admin_routes import register_admin
 register_admin(app)
-
-
-# =========================================================
-# DATABASE PATH
-# =========================================================
-
-BASE_DIR = os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))
-)
-
-DATABASE_PATH = os.path.join(
-    BASE_DIR,
-    "chemical_waste.db"
-)
 
 
 # =========================================================
@@ -67,15 +53,7 @@ def get_project_category(virtual_group):
 # DATABASE CONNECTION
 # =========================================================
 
-def get_connection():
 
-    connection = sqlite3.connect(
-        DATABASE_PATH
-    )
-
-    connection.row_factory = sqlite3.Row
-
-    return connection
 
 
 # =========================================================
@@ -116,27 +94,23 @@ def normalize_text(text):
 # GET ALL CHEMICALS
 # =========================================================
 
+
 def get_all_chemicals():
-
-    connection = get_connection()
-
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        SELECT
-            id,
-            chemical_name,
-            aliases,
-            primary_project_class,
-            virtual_group
-        FROM chemicals
-    """)
-
-    chemicals = cursor.fetchall()
-
-    connection.close()
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    id,
+                    chemical_name,
+                    aliases,
+                    primary_project_class,
+                    virtual_group
+                FROM chemicals
+            """)
+            chemicals = cursor.fetchall()
 
     return chemicals
+
 
 
 # =========================================================
@@ -324,7 +298,7 @@ def status():
             FROM chemicals
         """)
 
-        total = cursor.fetchone()[0]
+        total = cursor.fetchone()["count"]
 
         connection.close()
 
@@ -358,7 +332,7 @@ def status():
                 "Disconnected",
 
             "message":
-                str(error)
+                "Database operation failed"
 
         }), 500
 
@@ -451,7 +425,7 @@ def search_chemical():
                 "Database search failed",
 
             "message":
-                str(error),
+                "Database operation failed",
 
             "matches":
                 []
@@ -523,7 +497,7 @@ def get_chemical(chemical_id):
                 primary_project_class,
                 virtual_group
             FROM chemicals
-            WHERE id = ?
+            WHERE id = %s
         """, (
             chemical_id,
         ))
@@ -585,7 +559,7 @@ def get_chemical(chemical_id):
                 "Could not load chemical",
 
             "message":
-                str(error)
+                "Database operation failed"
 
         }), 500
 
@@ -600,7 +574,7 @@ if __name__ == "__main__":
     print("-----------------------------------------")
     print("Chemical Classification API")
     print("-----------------------------------------")
-    print("Database:", DATABASE_PATH)
+    print("Database: PostgreSQL (DATABASE_URL)")
     print("Server: http://127.0.0.1:5000")
     print("-----------------------------------------")
     print()

@@ -4,3 +4,4 @@ flask-cors
 python-dotenv
 itsdangerous
 Werkzeug
+psycopg[binary]
